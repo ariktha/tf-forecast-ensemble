@@ -1,0 +1,321 @@
+---
+title: "Figures and tables for Prob Forecast"
+author: "Ariktha Srivathsan"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+rm(list=ls())
+
+library(tidyverse)
+library(here)
+library(tableone)
+library(ggpubr)
+library(boot)
+library(patchwork)
+library(scales)
+library(ggrepel)
+```
+
+```{r Source scripts and load data}
+source(here("scripts", 'pars.R'))
+source(here("scripts", "fns_ensemble.R"))
+
+prev <- readRDS(here("data", "prev.RDS"))
+
+final_ens <- readRDS(here("data", "final_ens.RDS"))
+eval_scores <- read_csv(here("data", "eval_scores.csv"))
+eg <- readRDS(here("data", "eg.RDS"))
+weights <- readRDS(here("data", "weights.RDS"))
+
+scores <- readRDS(here("data", "scores_long.RDS"))
+
+#prob_fail <- readRDS(here("data", "prob_fail_wide.RDS"))
+```
+
+```{r Table 1, echo = TRUE}
+prev <- prev %>% arrange(year) %>% filter(year >= 2004) %>% drop_na(admin0_id) %>%
+  mutate(admin0_name = ifelse(admin0_name == "Congo", "Democratic Republic of the Congo", admin0_name)) %>%
+  distinct() %>% drop_na(tf_prev, admin0_id, geo_id, year)
+
+prev <- prev %>% mutate(set_cat = case_when(year %in% 2004:2018 ~ "train",
+                                            year %in% 2019:2021 ~ "score",
+                                            year %in% 2022:2023 ~ "evaluate",
+                                            TRUE ~ as.character(NA)))
+
+table(prev$set_cat)
+
+# Years represented
+summary(prev$year)
+
+# Number of datapoints
+nrow(prev)
+
+# Number of IUs
+length(unique(prev$geo_id))
+
+# Number of countries
+length(unique(prev$admin0_id))
+
+# TF and TT prevalence
+summary(prev$tf_prev)
+summary(prev$tt_prev)
+
+# Rounds of MDA
+summary(prev$num_MDA)
+```
+
+```{r Prevalence plot}
+# prev <- prev %>% mutate(cat = case_when(admin0_id == 24 ~ "Ethiopia",
+#                                         admin0_name %in% africa_countries ~ "Other African Countries",
+#                                         TRUE ~ "Not in Africa"))
+# prev$cat <- factor(prev$cat, levels = c("Ethiopia", "Other African Countries", "Not in Africa"), ordered = TRUE)
+prev_yr <- prev %>% group_by(year) %>% summarise(n = paste(year, " (N = ", n(), ")", sep = "")) %>% distinct()
+prev <- left_join(prev, prev_yr, by = "year")
+
+dens_prev <- ggplot(subset(prev, year < 2019)) + 
+  geom_density(aes(x = tf_prev, group = year, color = year), bounds = c(0, 100)) + 
+  scale_color_viridis_c(breaks = c(2004, 2011, 2018), labels = c(2004, 2011, 2018),
+                        limits = c(2004, 2018), name = "Year", direction = -1) + 
+  geom_vline(xintercept = 5, linetype = 2) + xlim(c(0, 30)) + theme_minimal() +
+  ylab("Density") + xlab("TF Prevalence (%)") + ylim(c(0, 0.3)) +
+  theme(text = element_text(size = 14), legend.position = c(0.8, 0.75), 
+        legend.background = element_rect(fill = "white", color = NA), 
+        panel.border = element_rect(fill = NA))
+
+hist_prev <- ggplot(subset(prev, year %in% 2019:2022)) +
+  geom_histogram(aes(x = tf_prev), binwidth = 0.5) + 
+  facet_wrap(~ n, nrow = 4) + theme_minimal(base_size = 12) + xlim(c(0, 30)) +
+  geom_vline(xintercept = 5, linetype = 2, color = "red") + ylab("") + xlab("TF Prevalence (%)")  + 
+  theme(panel.border = element_rect(fill = NA))
+
+prev_plot <- ggarrange(dens_prev, hist_prev, widths = c(2, 1), labels = "AUTO", font.label = list(face = "plain"))
+
+prev_plot
+
+ggsave(here("figs", "prev_plot.png"), prev_plot, width = 12, height = 7, units = "in", bg = "white")
+```
+
+```{r Scores plot}
+scores_long <- scores %>% dplyr::select(- starts_with("sum")) %>% #filter(model != "Uniform") %>%
+  pivot_longer(cols = c("mean_crps", "mean_logs"), names_to = "score_type", values_to = "score") %>%
+  mutate(score_type = case_when(grepl("crps", score_type) ~ "CRPS",
+                                grepl("logs", score_type) ~ "Log Score",
+                                TRUE ~ as.character(NA))) %>%
+#  mutate(score = ifelse(score_type == "Log Score", score*(-1), score)) %>%
+  mutate(year = as.character(year))
+
+scores_long_summ <- scores_long %>% group_by(model, score_type) %>% 
+  summarise(year = "Average", score = mean(score))
+  
+scores_long <- scores_long %>% rbind(scores_long_summ) %>% 
+  mutate_at(c("model", "year", "score_type"), as.factor)
+
+scores_long$score_type <- factor(scores_long$score_type, levels = c("Log Score", "CRPS"), ordered = TRUE)
+
+scores_rank <- scores_long %>% ungroup() %>% filter(score_type == "Log Score") %>% 
+  filter(year == "Average") %>% arrange(score) %>% mutate(rank = row_number()) %>% dplyr::select(model, rank)
+
+scores_long <- scores_long %>% left_join(scores_rank, by = "model")
+
+scores_long <- scores_long %>% filter(model != "Uniform")
+
+scores_palette <- viridis_pal(option = "mako")(5)[2:4]
+
+score_sens <- ggplot(data = scores_long) + 
+  geom_point(aes(x = reorder(model, rank), y = score, fill = year, shape = year, alpha = year), size = 3, color = "black") +
+  facet_wrap(~ score_type, nrow = 2, scales = "free_y") + 
+  theme_minimal(base_size = 16) + ylab("") +
+  scale_fill_manual(breaks = c("2019", "2020", "2021", "Average"), name = "", 
+                     values = c(scores_palette[1], scores_palette[2], scores_palette[3], "black")) + 
+  scale_alpha_manual(breaks = c("2019", "2020", "2021", "Average"), name = "", 
+                     values = c(0.7, 0.7, 0.7, 1)) + 
+  scale_shape_manual(breaks = c("2019", "2020", "2021", "Average"), name = "", 
+                     values = c(21, 21, 21, 18)) + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank(), 
+        panel.border = element_rect(fill = NA)) + scale_y_continuous(trans = "log10")
+
+score_sens
+
+ggsave(here("figs", "scores_sens.png"), bg = "white", width = 10, height = 7, units = "in")
+
+
+
+
+
+```
+
+```{r Weights plot}
+
+weights <- weights %>% mutate(k = factor(k)) %>% replace_na(list(weight = 0))
+
+weights_plot <- ggplot(data = weights) + 
+  geom_point(aes(x = reorder(model, score), y = weight, shape = k), size = 3, fill = "black", alpha = 0.7) +
+  theme_minimal(base_size = 16) + xlab("") + ylim(0, 1) +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), 
+        panel.border = element_rect(fill = NA),
+        legend.position = c(0.87, 0.5),
+        legend.box.background = element_rect(fill = "white")) +
+  scale_shape_manual(breaks = c(1, 10, 100, 1000), values = c(24, 25, 20, 8)) + guides(x = "none")
+
+weights_plot_color <- ggplot(data = weights) + 
+  geom_point(aes(x = reorder(model, score), y = weight, color = k), size = 3, alpha = 0.7) +
+  theme_minimal(base_size = 16) + xlab("") + ylim(0, 1) +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), 
+        panel.border = element_rect(fill = NA),
+        legend.position = c(0.87, 0.65),
+        legend.box.background = element_rect(fill = "white")) +
+  scale_color_viridis_d()
+
+weights_plot_color
+
+ggsave(here("figs", "weights.png"), weights_plot_color, width = 7, height = 5, units = "in", bg = "white")
+```
+
+```{r Ensemble Evaluation}
+
+eval_scores <- eval_scores %>% mutate_at(c("crps", "logs"), function(x) round(x, 2))
+
+eval_long <- eval_scores %>% mutate(model = fct_reorder(model, logs)) %>% filter(model != "Uniform") %>%
+  pivot_longer(!c(model,wt_rank), names_to = "score_type", values_to = "score")
+
+eval_ranks_logs <- eval_long %>% filter(score_type == "logs") %>% arrange(score) %>% 
+  mutate(rank_logs = row_number()) %>% dplyr::select(model, rank_logs, wt_rank)
+eval_ranks_crps <- eval_long %>% filter(score_type == "crps") %>% arrange(score) %>% 
+  mutate(rank_crps = row_number()) %>% dplyr::select(model, rank_crps, wt_rank)
+
+eval_ranks <- left_join(eval_ranks_crps, eval_ranks_logs)
+rm(eval_ranks_crps, eval_ranks_logs)
+
+eval_long <- eval_long %>% left_join(eval_ranks) %>%
+  mutate(rank = ifelse(score_type == "logs", rank_logs, rank_crps))
+
+eval_long$score_type <- reorder(eval_long$score_type, eval_long$score)
+eval_long$model <- reorder(eval_long$model, eval_long$score)
+
+eval_labels <- c(logs = "Log Score", crps = "CRPS")
+
+eval_long_crps <- eval_long %>% filter(score_type == "crps")
+eval_long_logs <- eval_long %>% filter(score_type == "logs")
+
+eval_plot_crps <- ggplot(data = eval_long_crps) + 
+  geom_point(aes(x = reorder(model, rank_logs), y = score), size = 2, color = "#FF8F00") +
+  geom_label(aes(x = reorder(model, rank_logs), y = score, label = rank), hjust = -0.4) + 
+  theme_minimal() + ggtitle(label = "CRPS") + scale_x_discrete(labels = function(x){sub("\\s", "\n", x)}) +
+  theme(plot.title = element_text(size = 16, hjust = 0.5), text = element_text(size = 16), 
+        panel.border = element_rect(fill = NA), axis.title.x = element_blank(), 
+        axis.text.x = element_text()) +
+  guides(color = "none") + scale_y_continuous(name = NULL, trans = "log10", limits = c(2150, 2500))
+
+eval_plot_logs <- ggplot(data = eval_long_logs) + 
+  geom_point(aes(x = reorder(model, rank_logs), y = score), size = 2, color = "#1A237E") +
+  geom_label(aes(x = reorder(model, rank_logs), y = score, label = rank), hjust = -0.4) + 
+  theme_minimal() + ggtitle("Log Score") +
+  theme(plot.title = element_text(size = 16, hjust = 0.5), text = element_text(size = 16), 
+        panel.border = element_rect(fill = NA),
+        axis.text.x = element_blank(), axis.title.x = element_blank()) +
+  guides(color = "none") + scale_y_continuous(name = NULL, trans = "log10", limits = c(140, 350))
+
+eval_plot <- eval_plot_logs / eval_plot_crps
+eval_plot
+
+ggsave(here("figs", "evaluation.png"), eval_plot, width = 14, height = 5, units = "in", bg = "white")
+
+eval_logs <- ggplot(data = eval_long_logs) + 
+  geom_point(aes(x = reorder(model, wt_rank), y = score), size = 2, color = "black") +
+  geom_label(aes(x = reorder(model, rank_logs), y = score, label = rank), hjust = -0.4) +
+  theme_minimal(base_size = 16) + #scale_x_discrete(labels = function(x){sub("\\s", "\n", x)}) +
+  theme(panel.border = element_rect(fill = NA), 
+        axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1), 
+        axis.title.x = element_blank()) +
+  guides(color = "none") + scale_y_continuous(name = "LogS", trans = "log10", limits = c(140, 320))
+eval_logs
+ggsave(here("figs", "evaluation_logs.png"), eval_logs, width = 12, height = 2, bg = "white")
+
+fig3 <- weights_plot/eval_logs
+
+ggsave(here("figs", "fig3.png"), fig3, width = 9, height = 7, bg = "white")
+
+```
+
+```{r Evaluation log score}
+
+weights_wide <- weights %>% pivot_wider(names_from = k, values_from = weight, names_prefix = "k = ") %>%
+  dplyr::select(-score)
+eval_long_logs <- eval_long_logs %>% dplyr::select(- c(score_type)) %>%
+  left_join(weights_wide, by = "model")
+eval_dat <- eval_long_logs %>% dplyr::select(- starts_with("rank_")) %>%
+  pivot_longer(cols = starts_with("k = "), names_to = "k", values_to = "weight")
+```
+
+
+```{r PDF example}
+eg <- eg %>% mutate(q = list(q), mod_type = ifelse(model == "Uniform", "Uniform Model", "Candidate Models")) %>% 
+  dplyr::select(c(model, mod_type, pdf, q))
+
+eg_en <- final_ens %>% filter(geo_id == eg_geo) %>% 
+  mutate(mod_type = "Ensemble Model", model = "Ensemble", q = list(q)) %>% 
+  dplyr::select(c(model, mod_type, pdf, q))
+eg_en <- eg_en %>% unnest(pdf, q)
+
+eg <- rbind(eg, eg_en)
+
+eg_long <- eg %>% ungroup() %>% unnest(pdf, q)
+eg_long$mod_type <- factor(eg_long$mod_type)
+eg_long$model <- factor(eg_long$model)
+
+sample_op_plot <- ggplot() + 
+  geom_line(data = eg_long, aes(x = q, y = pdf, group = model, color = mod_type, linetype = mod_type)) + 
+  geom_line(data = eg_en, aes(x = q, y = pdf), color = "black") +
+  theme_minimal() + ylab("") + xlab("TF Prevalence (%)") + xlim(c(0, 10)) +
+  theme(text = element_text(size = 14), legend.position = c(0.75, 0.75), 
+        legend.box.background = element_rect(fill = "white"), legend.title = element_blank()) + 
+  ylab("Probability Distribution Function") +
+  scale_color_manual(breaks = c("Ensemble Model", "Uniform Model", "Candidate Models"), 
+                     name = "", values = c("black", "grey30", "grey70")) +
+  scale_linetype_manual(breaks = c("Ensemble Model", "Uniform Model", "Candidate Models"), 
+                     name = "", values = c("solid", "dashed", "solid"))
+
+sample_op_plot
+
+ggsave(here("figs", "sample_op.png"), sample_op_plot, width = 7, height = 5, units = "in", bg = "white")
+```
+
+```{r Final result}
+len <- nrow(final_ens)
+
+sum_ens <- final_ens %>% drop_na() %>% summarise(pdf = list(unlist(pmap(pdf, sum)))) 
+sum_ens <- sum_ens %>% mutate(pdf = list(sapply(unlist(pdf), function(x) x/len))) %>%
+  mutate(cdf = list(pdf2cdf(pdf)))
+
+## Check that overall PDF's AUC = 1
+last(unlist(sum_ens$cdf))
+
+# % of all districts in endemic countries expected to attain EPHP 2030
+round((1-(unlist(sum_ens$cdf)[501]/unlist(sum_ens$cdf)[10001]))*100, 2)
+
+# Number of districts expected to fail EPHP 2030
+(1-(unlist(sum_ens$cdf)[501]/unlist(sum_ens$cdf)[10001]))*len
+```
+
+```{r}
+prob_tab <- tibble(geo_id = final_ens$geo_id, p_control = final_ens$p_control, area = final_ens$area)
+prob_tab <- prob_tab %>% mutate(p_control = p_control/area) %>% dplyr::select(-area)
+
+summary(prob_tab$p_control)
+
+p_control_hist <- ggplot(data = prob_tab) + geom_histogram(aes(x = p_control), binwidth = 0.02) + theme_minimal()
+
+ggsave(here("figs", "p_control_hist.png"), p_control_hist, width = 7, height = 5, units = "in", bg = "white")
+```
+
+
+```{r Seths mediterranean idea}
+# How many districts (n) would need to be completely controlled to reduce the number of uncontrolled districts by N?
+
+
+```
+

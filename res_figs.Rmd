@@ -1,0 +1,218 @@
+---
+title: "Figures and tables for Prob Forecast"
+author: "Ariktha Srivathsan"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+rm(list = ls())
+
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(sf)
+sf_use_s2(FALSE)
+library(rnaturalearth)
+library(rnaturalearthdata)
+```
+
+```{r Prep}
+source(here("scripts", "fns_ensemble.R"))
+source(here("scripts", 'pars.R'))
+
+final_ens <- readRDS(here("data", "final_ens.RDS"))
+geo_dict <- readRDS(here("data", "geo_dict.RDS"))
+prev <- readRDS(here("data", "prev.RDS"))
+
+worldmap <- ne_countries(scale = 'medium', type = 'map_units', returnclass = 'sf')
+africa <- worldmap %>% filter(continent == "Africa")
+af_countries <- read_csv(here("data", "raw", "africa_countries.csv"), show_col_types = FALSE)
+africa_countries <- af_countries$Country
+rm(af_countries)
+
+res <- final_ens %>% left_join(geo_dict, by = "geo_id") %>% distinct()
+# res <- res %>% mutate(admin0_name = ifelse(admin0_name == "Congo", "Democratic Republic of the Congo", admin0_name))
+
+# res_sf <- st_as_sf(res)
+# crop_factor <- st_bbox(c(xmin = -20, xmax = 55, ymax = 40, ymin = -40), crs = st_crs(res_sf))
+# res_cropped <- st_crop(res_sf, crop_factor)
+# res_cropped <- res_cropped %>% filter(admin0_name %in% africa_countries)
+
+res <- res %>% filter(admin0_name %in% africa_countries) %>% 
+  rowwise() %>%
+  mutate(p_control = p_control/area,
+         control = ifelse(expval < 5, TRUE, FALSE))
+
+# res_perm <- res %>% filter(admin0_name %in% perm_countries)
+
+res_eth <- res %>% filter(admin0_id == 24)
+
+res_eth_region <- res_eth %>% group_by(admin1_name) %>% summarise(prop_cont = sum(control)/ n(), geometry = st_union(geometry)) %>%
+  rowwise() %>% mutate(centroid = st_centroid(geometry))
+
+```
+
+```{r Africa figs - all countries}
+af_p1 <- ggplot(res) + geom_density(aes(x = p_control), bounds = c(0, 1)) + xlim(c(0, 1)) +
+  theme_minimal() + xlab("Probability of Control") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"))
+af_p1_bp <- ggplot(res) + geom_boxplot(aes(x = p_control)) + xlim(c(0, 1)) +
+  theme_minimal() + xlab("Probability of Control") + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"), axis.text.y = element_text(color = NA))
+
+af_p2 <- ggplot(res) + geom_histogram(aes(x = expval), binwidth = 0.1) + xlim(c(0, 25)) +
+  theme_minimal() + xlab("Expected value of TF") + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2) + 
+  theme(panel.border = element_rect(fill = NA, color = "black"))
+af_p2_bp <- ggplot(res) + geom_boxplot(aes(x = expval), binwidth = 0.1) + xlim(c(0, 25)) +
+  theme_minimal() + xlab("Expected value of TF") + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2) + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"), axis.text.y = element_text(color = NA))
+
+ggsave(here("figs", "af_exp_plots.png"),
+       ggarrange(af_p1, af_p2, af_p1_bp, af_p2_bp, heights = c(2, 1), 
+                 labels = "AUTO", font.label = list(face = "plain")), 
+       width = 9, height = 7, bg = "white", unit = "in")
+
+af_exp_map <- ggplot() + geom_sf(data = res, aes(geometry = geometry, fill = p_control), color = NA) +
+  geom_sf(data = africa, aes(geometry = geometry), size = 0.5, color = "black", fill = NA) +
+  scale_fill_viridis_c(limits = c(0.5, 1), name = "", na.value = "white") + ylim(c(-40, 40)) +
+  ggtitle("Probability of control in 2030") + theme_minimal() +theme(text = element_text(size = 16))
+
+# af_exp_map
+
+ggsave(here("figs", "af_exp_map.png"), width = 8, height = 8, bg = "white", unit = "in")
+```
+
+```{r Africa figs - permitted countries}
+af_p1 <- ggplot(res_perm) + geom_density(aes(x = p_control), bounds = c(0, 1)) + xlim(c(0, 1)) +
+  theme_minimal() + xlab("Probability of Control") + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"))
+af_p1_bp <- ggplot(res_perm) + geom_boxplot(aes(x = p_control)) + xlim(c(0, 1)) +
+  theme_minimal() + xlab("Probability of Control") + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"), axis.text.y = element_text(color = NA))
+
+af_p2 <- ggplot(res_perm) + geom_histogram(aes(x = expval), binwidth = 0.1) + xlim(c(0, 25)) +
+  theme_minimal() + xlab("Expected value of TF") + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2) + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"))
+af_p2_bp <- ggplot(res_perm) + geom_boxplot(aes(x = expval), binwidth = 0.1) + xlim(c(0, 25)) +
+  theme_minimal() + xlab("Expected value of TF") + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2) + ylab("") + 
+  theme(panel.border = element_rect(fill = NA, color = "black"), axis.text.y = element_text(color = NA))
+
+ggsave(here("figs", "af_perm_exp_plots.png"), 
+       ggarrange(af_p1, af_p2, af_p1_bp, af_p2_bp, heights = c(2, 1), 
+                 labels = "AUTO", font.label = list(face = "plain")), 
+       width = 9, height = 7, bg = "white", unit = "in")
+
+af_exp_map <- ggplot() + geom_sf(data = res, aes(geometry = geometry, fill = p_control), color = NA) +
+  geom_sf(data = africa, aes(geometry = geometry), size = 0.5, color = "black", fill = NA) +
+  scale_fill_viridis_c(limits = c(0, 1), name = "Probability", na.value = "grey", option = "magma") + 
+  ylim(c(-40, 40)) + theme_minimal() + 
+  theme(text = element_text(size = 16), legend.position = c(0.3, 0.25), 
+        legend.background = element_rect(fill = "white", color = NA), 
+        legend.box = element_blank())
+
+af_exp_map
+
+ggsave(here("figs", "af_perm_exp_map.png"), width = 8, height = 8, bg = "white", unit = "in")
+```
+
+```{r By country, fig.width=20, fig.height=15}
+
+ggplot(res) + geom_histogram(aes(x = exp_tf)) + xlim(c(0, 15)) +
+  theme_minimal() + xlab("Expected value of TF") + facet_wrap(~admin0_name) + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2)
+
+ggplot(res_cropped) + geom_histogram(aes(x = exp_tf)) + xlim(c(0, 15)) +
+  theme_minimal() + xlab("Probability of Control") + facet_wrap(~admin0_name) + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2)
+```
+
+```{r Ethiopia plots}
+
+ggplot(res_eth) + geom_density(aes(x = p_control)) + xlim(c(0, 1)) +
+  theme_minimal(base_size = 20) + xlab("Probability of Control (TF < 5%)")
+
+ggsave(here("figs", "p_cont_eth.png"), width = 7, height = 5, units = "in")
+
+ggplot(res_eth) + geom_density(aes(x = p_control, group = admin1_name, color = admin1_name)) + xlim(c(0, 1)) +
+  theme_minimal(base_size = 20) + xlab("Probability of Control (TF < 5%)") + scale_color_discrete(name = "Region") +
+  theme(legend.position = c(0.25, 0.65), legend.background = element_rect(fill = "white", color = NA))
+  
+ggsave(here("figs", "p_cont_eth_reg.png"), width = 7, height = 5, units = "in")
+
+ggplot(res_eth) + geom_density(aes(x = p_control, color = admin1_name)) + xlim(c(0, 1)) +
+  theme_minimal() + xlab("Probability of Control") + ggtitle("Ethiopia") + 
+  facet_wrap(~admin1_name) + scale_color_discrete(name = "Region") +
+  theme(legend.position = "none")
+
+ggplot(res_eth) + geom_histogram(aes(x = exp_tf), binwidth = 0.1) + xlim(c(0, 25)) +
+  theme_minimal() + xlab("Expected value of TF") + ggtitle("Ethiopia") + 
+  geom_vline(xintercept = 5, color = "red", linetype = 2)
+
+```
+
+```{r Ethiopia maps}
+
+eth_map1 <- ggplot(res_eth) + geom_sf(aes(geometry = geometry, fill = admin1_name), size = 0.01, color = NA) +
+  scale_fill_viridis_d(name = "", na.value = "grey") + theme_minimal(base_size = 16) + ggtitle("Regions in Ethiopia") +
+  geom_sf_label(data = res_eth_region, aes(geometry = geometry, label = admin1_name, x = centroid$X, y = centroid$Y), 
+               size = 3, fontface = "bold", nudge_y = 0.5) + guides(fill = "none") + 
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+eth_map2 <- ggplot(res_eth_region) + geom_sf(aes(geometry = geometry, fill = prop_cont), size = 0.01, color = NA) +
+  scale_fill_viridis_c(limits = c(0.5, 1), name = "Proportion", na.value = "grey", option = "mako") +
+  theme_minimal(base_size = 16) + ggtitle("Proportion of districs with TF < 5% by region") + 
+  theme(legend.position = c(0.85, 0.75))
+
+eth_map3 <- ggplot(res_eth) + geom_sf(aes(geometry = geometry, fill = p_control), size = 0.01, color = NA) +
+  scale_fill_viridis_c(limits = c(0, 1), name = "Probability", na.value = "grey", option = "magma") +
+  theme_minimal(base_size = 16) + ggtitle("Probability of control in 2030") + 
+  theme(legend.position = c(0.85, 0.75), legend.background = element_rect(fill = "white", linewidth = 0.3))
+
+eth_map3
+
+ggsave(here("figs", "eth_map3.png"), eth_map3, width = 7, height = 5, units = "in", bg = "white")
+
+map3_hist <- ggplot(res_eth) + geom_density(aes(x = p_control), bounds = c(0, 1)) + xlab("Probability of < 5%") +
+  theme_minimal(base_size = 16) + ggtitle("Probability of control in 2030")
+
+ggsave(here("figs", "map3_hist.png"), map3_hist, width = 7, height = 5, units = "in", bg = "white")
+
+map3_hist_region <- ggplot(res_eth) + geom_density(aes(x = p_control, group = admin1_name, color = admin1_name), bounds = c(0, 1)) + 
+  xlab("Probability of < 5%") + theme_minimal(base_size = 16) + ggtitle("Probability of control in 2030") +
+  scale_color_viridis_d() + theme(legend.position = "none")
+
+ggsave(here("figs", "map3_hist_region.png"), map3_hist_region, width = 7, height = 5, units = "in", bg = "white")
+
+eth_map4 <- ggplot(res_eth) + geom_sf(aes(geometry = geometry, fill = expval), size = 0.01, color = NA) +
+  scale_fill_viridis_c(limits = c(0, 20), name = "TF%", na.value = "white", option = "rocket", direction = -1) +
+  theme_minimal(base_size = 16) + ggtitle("Expected value of TF in 2030") + 
+  theme(legend.position = c(0.85, 0.75), legend.background = element_rect(fill = "white", linewidth = 0.3))
+
+eth_map4
+
+ggsave(here("figs", "eth_map4.png"), eth_map4, width = 7, height = 5, units = "in", bg = "white")
+
+ggsave(here("figs", "eth_maps.png"), ggarrange(eth_map1, eth_map2, eth_map3, eth_map4, ncol = 2, nrow = 2), 
+       width = 16, height = 14, units = "in", bg = "white")
+
+```
+
+```{r}
+p_plot <- ggplot() + geom_sf(data = africa, aes(geometry = geometry), color = "black", fill = "white") + 
+  theme(axis.text.x = element_blank()) + theme_minimal(base_size = 24) + guides(fill = "none") +
+  geom_sf(data = subset(prev, year %in% c(2021:2022)), aes(fill = tf_prev, geometry = geometry)) + 
+  facet_wrap(~year, nrow = 1) + scale_fill_viridis_c(name = "TF %", na.value = "white") + xlim(c(-20, 55))
+
+# p_plot
+
+ggsave(here("figs", "empty_af.png"), width = 12, height = 7, units = "in", bg = "white")
+```
+
+
